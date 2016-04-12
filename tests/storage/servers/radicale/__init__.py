@@ -43,8 +43,6 @@ create table property (
        primary key (name, collection_path));
 '''.split(';')
 
-storage_backend = os.environ.get('RADICALE_BACKEND', '') or 'filesystem'
-
 
 def do_the_radicale_dance(tmpdir):
     # All of radicale is already global state, the cleanliness of the code and
@@ -57,38 +55,16 @@ def do_the_radicale_dance(tmpdir):
 
     # radicale.config looks for this envvar. We have to delete it before it
     # tries to load a config file.
-    os.environ['RADICALE_CONFIG'] = ''
+    os.environ.pop('RADICALE_CONFIG', None)
+
     import radicale.config
+    radicale.config.set('rights', 'type', 'owner_only')
+    radicale.config.set('auth', 'type', 'htpasswd')
+    radicale.config.set('storage', 'filesystem_folder', tmpdir)
 
-    # Now we can set some basic configuration.
-    # Radicale <=0.7 doesn't work with this, therefore we just catch the
-    # exception and assume Radicale is open for everyone.
-    try:
-        radicale.config.set('rights', 'type', 'owner_only')
-        radicale.config.set('auth', 'type', 'http')
-
-        import radicale.auth.http
-
-        def is_authenticated(user, password):
-            return user == 'bob' and password == 'bob'
-        radicale.auth.http.is_authenticated = is_authenticated
-    except Exception as e:
-        print(e)
-
-    if storage_backend in ('filesystem', 'multifilesystem'):
-        radicale.config.set('storage', 'type', storage_backend)
-        radicale.config.set('storage', 'filesystem_folder', tmpdir)
-    elif storage_backend == 'database':
-        radicale.config.set('storage', 'type', 'database')
-        radicale.config.set('storage', 'database_url', 'sqlite://')
-        from radicale.storage import database
-
-        s = database.Session()
-        for line in RADICALE_SCHEMA:
-            s.execute(line)
-        s.commit()
-    else:
-        raise RuntimeError(storage_backend)
+    def is_authenticated(user, password):
+        return user == 'bob' and password == 'bob'
+    radicale.auth.is_authenticated = is_authenticated
 
 
 class ServerMixin(object):
@@ -114,12 +90,12 @@ class ServerMixin(object):
                 collection += self.storage_class.fileext
                 url = url.rstrip('/') + '/' + urlquote(collection)
 
-            rv = {'url': url, 'username': 'bob', 'password': 'bob',
-                  'collection': collection}
+            rv = {'url': url, 'username': 'bob', 'password': 'bob'}
 
             if collection is not None:
+                rv = self.storage_class.create_collection(collection, **rv)
                 s = self.storage_class(**rv)
-                s.delete(*s.upload(get_item()))
+                assert not list(s.list())
 
             return rv
         return inner
