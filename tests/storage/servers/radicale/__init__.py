@@ -29,6 +29,11 @@ def do_the_radicale_dance(tmpdir):
     radicale.config.set('auth', 'type', 'htpasswd')
     radicale.config.set('storage', 'filesystem_folder', tmpdir)
 
+    # Radicale 2.0 duplicates the filesystem_folder setting (global state) into
+    # another module (also global state).
+    import radicale.storage
+    radicale.storage.FOLDER = tmpdir
+
     def is_authenticated(user, password):
         return user == 'bob' and password == 'bob'
     radicale.auth.is_authenticated = is_authenticated
