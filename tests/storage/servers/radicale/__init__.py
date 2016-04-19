@@ -43,7 +43,9 @@ class ServerMixin(object):
 
     @pytest.fixture(autouse=True)
     def setup(self, request, tmpdir):
+        tmpdir.mkdir('bob')
         do_the_radicale_dance(str(tmpdir))
+
         from radicale import Application
 
         wsgi_intercept.requests_intercept.install()
