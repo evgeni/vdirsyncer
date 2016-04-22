@@ -3,40 +3,18 @@
 import os
 import sys
 
+import logging
 import pytest
+
+import radicale
+import radicale.config
 
 from vdirsyncer.utils.compat import urlquote
 
 import wsgi_intercept
 import wsgi_intercept.requests_intercept
 
-
-def do_the_radicale_dance(tmpdir):
-    # All of radicale is already global state, the cleanliness of the code and
-    # all hope is already lost. This function runs before every test.
-
-    # This wipes out the radicale modules, to reset all of its state.
-    for module in list(sys.modules):
-        if module.startswith('radicale'):
-            del sys.modules[module]
-
-    # radicale.config looks for this envvar. We have to delete it before it
-    # tries to load a config file.
-    os.environ.pop('RADICALE_CONFIG', None)
-
-    import radicale.config
-    radicale.config.set('rights', 'type', 'owner_only')
-    radicale.config.set('auth', 'type', 'htpasswd')
-    radicale.config.set('storage', 'filesystem_folder', tmpdir)
-
-    # Radicale 2.0 duplicates the filesystem_folder setting (global state) into
-    # another module (also global state).
-    import radicale.storage
-    radicale.storage.FOLDER = tmpdir
-
-    def is_authenticated(user, password):
-        return user == 'bob' and password == 'bob'
-    radicale.auth.is_authenticated = is_authenticated
+logger = logging.getLogger(__name__)
 
 
 class ServerMixin(object):
@@ -44,12 +22,22 @@ class ServerMixin(object):
     @pytest.fixture(autouse=True)
     def setup(self, request, tmpdir):
         tmpdir.mkdir('bob')
-        do_the_radicale_dance(str(tmpdir))
 
-        from radicale import Application
+        def get_app():
+            config = radicale.config.load(())
+            config.set('storage', 'filesystem_folder', str(tmpdir))
+            config.set('rights', 'type', 'owner_only')
+
+            app = radicale.Application(config, logger)
+
+            def is_authenticated(user, password):
+                return user == 'bob' and password == 'bob'
+
+            app.is_authenticated = is_authenticated
+            return app
 
         wsgi_intercept.requests_intercept.install()
-        wsgi_intercept.add_wsgi_intercept('127.0.0.1', 80, Application)
+        wsgi_intercept.add_wsgi_intercept('127.0.0.1', 80, get_app)
 
         def teardown():
             wsgi_intercept.remove_wsgi_intercept('127.0.0.1', 80)
