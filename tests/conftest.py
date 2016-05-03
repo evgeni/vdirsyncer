@@ -17,9 +17,10 @@ def setup_logging():
     click_log.basic_config('vdirsyncer').setLevel(logging.DEBUG)
 
 
+# XXX: Py2
 @pytest.fixture(autouse=True)
 def suppress_py2_warning(monkeypatch):
-    monkeypatch.setattr('vdirsyncer.cli._check_python2', lambda: None)
+    monkeypatch.setattr('vdirsyncer.cli._check_python2', lambda _: None)
 
 
 try:
@@ -40,7 +41,7 @@ settings.register_profile("deterministic", settings(
     derandomize=True,
 ))
 
-if os.getenv('DETERMINISTIC_TESTS').lower() == 'true':
+if os.environ['DETERMINISTIC_TESTS'].lower() == 'true':
     settings.load_profile("deterministic")
-elif os.getenv('CI').lower() == 'true':
+elif os.environ['CI'].lower() == 'true':
     settings.load_profile("ci")

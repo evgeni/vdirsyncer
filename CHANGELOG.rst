@@ -9,8 +9,29 @@ Package maintainers and users who have to manually update their installation
 may want to subscribe to `GitHub's tag feed
 <https://github.com/pimutils/vdirsyncer/tags.atom>`_.
 
+Version 0.11.0
+==============
+
+- Discovery is no longer automatically done when running ``vdirsyncer sync``.
+  ``vdirsyncer discover`` now has to be explicitly called.
+- Add a ``.plist`` example for Mac OS X.
+- Usage under Python 2 now requires a special config parameter to be set.
+- Various deprecated configuration parameters do no longer have specialized
+  errormessages. The generic error message for unknown parameters is shown.
+
+  - Vdirsyncer no longer warns that the ``passwordeval`` parameter has been
+    renamed to ``password_command``.
+
+  - The ``keyring`` fetching strategy has been dropped some versions ago, but
+    the specialized error message has been dropped.
+
+  - A old status format from version 0.4 is no longer supported. If you're
+    experiencing problems, just delete your status folder.
+
 Version 0.10.0
 ==============
+
+*released on 23 April 2016*
 
 - New storage types :storage:`google_calendar` and :storage:`google_contacts`
   have been added.

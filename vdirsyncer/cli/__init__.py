@@ -8,7 +8,7 @@ import click
 
 import click_log
 
-from .. import PROJECT_HOME, __version__
+from .. import PROJECT_HOME, __version__, exceptions
 from ..utils.compat import PY2
 
 
@@ -38,12 +38,27 @@ def catch_errors(f):
     return inner
 
 
-def _check_python2():
-    if PY2:
-        cli_logger.warning('Python 2 support will be dropped. Please switch '
-                           'to at least Python 3.3 as soon as possible. See '
-                           '{home}/issues/219 for more information.'
-                           .format(home=PROJECT_HOME))
+def _check_python2(config):
+    # XXX: Py2
+    if not PY2:
+        return
+
+    msg = (
+        'Python 2 support will be dropped. Please switch '
+        'to at least Python 3.3 as soon as possible. See '
+        '{home}/issues/219 for more information.'
+        .format(home=PROJECT_HOME)
+    )
+
+    if not config.general.get('python2', False):
+        raise exceptions.UserError(
+            msg + (
+                '\nSet python2 = true in the [general] section to get rid of '
+                'this error for now.'
+            )
+        )
+    else:
+        cli_logger.warning(msg)
 
 
 @click.group()
@@ -57,11 +72,11 @@ def app(ctx, config):
     '''
     vdirsyncer -- synchronize calendars and contacts
     '''
-    _check_python2()
     from .config import load_config
 
     if not ctx.config:
         ctx.config = load_config(config)
+    _check_python2(ctx.config)
 
 main = app
 
@@ -74,13 +89,19 @@ def max_workers_callback(ctx, param, value):
     return value
 
 
-max_workers_option = click.option(
-    '--max-workers', default=0, type=click.IntRange(min=0, max=None),
-    callback=max_workers_callback,
-    help=('Use at most this many connections. With debug messages enabled, '
-          'the default is 1, otherwise one connection per collection is '
-          'opened.')
-)
+def max_workers_option(default=0):
+    help = 'Use at most this many connections. '
+    if default == 0:
+        help += 'The default is 0, which means "as many as necessary". ' \
+                'With -vdebug enabled, the default is 1.'
+    else:
+        help += 'The default is {}.'.format(default)
+
+    return click.option(
+        '--max-workers', default=default, type=click.IntRange(min=0, max=None),
+        callback=max_workers_callback,
+        help=help
+    )
 
 
 def collections_arg_callback(ctx, param, value):
@@ -112,7 +133,7 @@ collections_arg = click.argument('collections', nargs=-1,
 @click.option('--force-delete/--no-force-delete',
               help=('Do/Don\'t abort synchronization when all items are about '
                     'to be deleted from both sides.'))
-@max_workers_option
+@max_workers_option()
 @pass_context
 @catch_errors
 def sync(ctx, collections, force_delete, max_workers):
@@ -149,7 +170,7 @@ def sync(ctx, collections, force_delete, max_workers):
 
 @app.command()
 @collections_arg
-@max_workers_option
+@max_workers_option()
 @pass_context
 @catch_errors
 def metasync(ctx, collections, max_workers):
@@ -174,10 +195,18 @@ def metasync(ctx, collections, max_workers):
 
 @app.command()
 @click.argument('pairs', nargs=-1)
-@max_workers_option
+@click.option(
+    '--list/--no-list', default=True,
+    help=(
+        'Whether to list all collections from both sides during discovery, '
+        'for debugging. This is quite slow. For faster discovery, disable '
+        'with --no-list.'
+    )
+)
+@max_workers_option(default=1)
 @pass_context
 @catch_errors
-def discover(ctx, pairs, max_workers):
+def discover(ctx, pairs, max_workers, list):
     '''
     Refresh collection cache for the given pairs.
     '''
@@ -194,7 +223,8 @@ def discover(ctx, pairs, max_workers):
                 discover_collections,
                 status_path=config.general['status_path'],
                 pair=pair,
-                skip_cache=True,
+                from_cache=False,
+                list_collections=list,
             ))
             wq.spawn_worker()
 

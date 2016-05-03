@@ -2,15 +2,19 @@
 
 from copy import deepcopy
 
+from hypothesis import assume
+from hypothesis.stateful import Bundle, RuleBasedStateMachine, rule
+import hypothesis.strategies as st
+
 import pytest
 
 import vdirsyncer.exceptions as exceptions
 from vdirsyncer.storage.base import Item
-from vdirsyncer.storage.memory import MemoryStorage
+from vdirsyncer.storage.memory import MemoryStorage, _random_string
 from vdirsyncer.sync import BothReadOnly, IdentConflict, StorageEmpty, \
     SyncConflict, sync
 
-from . import assert_item_equals, blow_up
+from . import assert_item_equals, blow_up, uid_strategy
 
 
 def empty_storage(x):
@@ -390,3 +394,82 @@ def test_unicode_hrefs():
     status = {}
     href, etag = a.upload(Item(u'UID:äää'))
     sync(a, b, status)
+
+
+class SyncMachine(RuleBasedStateMachine):
+    Status = Bundle('status')
+    Storage = Bundle('storage')
+
+    @staticmethod
+    def _get_items(storage):
+        return sorted(item.raw for etag, item in storage.items.values())
+
+    @rule(target=Storage, read_only=st.booleans(), flaky_etags=st.booleans())
+    def newstorage(self, read_only, flaky_etags):
+        s = MemoryStorage()
+        s.read_only = read_only
+        if flaky_etags:
+            def get(href):
+                _, item = s.items[href]
+                etag = _random_string()
+                s.items[href] = etag, item
+                return item, etag
+            s.get = get
+
+        return s
+
+    @rule(target=Status)
+    def newstatus(self):
+        return {}
+
+    @rule(target=Storage, storage=Storage,
+          uid=uid_strategy,
+          etag=st.text())
+    def upload(self, storage, uid, etag):
+        item = Item(u'UID:{}'.format(uid))
+        storage.items[uid] = (etag, item)
+        return storage
+
+    @rule(target=Storage, storage=Storage, href=st.text())
+    def delete(self, storage, href):
+        storage.items.pop(href, None)
+        return storage
+
+    @rule(
+        target=Status, status=Status,
+        a=Storage, b=Storage,
+        force_delete=st.booleans(),
+        conflict_resolution=st.one_of((st.just('a wins'), st.just('b wins')))
+    )
+    def sync(self, status, a, b, force_delete, conflict_resolution):
+        old_items_a = self._get_items(a)
+        old_items_b = self._get_items(b)
+
+        try:
+            # If one storage is read-only, double-sync because changes don't
+            # get reverted immediately.
+            for _ in range(2 if a.read_only or b.read_only else 1):
+                sync(a, b, status,
+                     force_delete=force_delete,
+                     conflict_resolution=conflict_resolution)
+        except BothReadOnly:
+            assert a.read_only and b.read_only
+            assume(False)
+        except StorageEmpty:
+            if force_delete:
+                raise
+            else:
+                assert not list(a.list()) or not list(b.list())
+                return status
+
+        items_a = self._get_items(a)
+        items_b = self._get_items(b)
+
+        assert items_a == items_b
+        assert items_a == old_items_a or not a.read_only
+        assert items_b == old_items_b or not b.read_only
+
+        return status
+
+
+TestSyncMachine = SyncMachine.TestCase

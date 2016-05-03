@@ -4,14 +4,11 @@ import json
 import unicodedata
 from textwrap import dedent
 
-from click.testing import CliRunner
-
 from hypothesis import example, given
 import hypothesis.strategies as st
 
 import pytest
 
-import vdirsyncer.cli as cli
 from vdirsyncer.utils.compat import PY2, to_native, to_unicode
 
 
@@ -36,6 +33,9 @@ def test_simple_run(tmpdir, runner):
     tmpdir.mkdir('path_a')
     tmpdir.mkdir('path_b')
 
+    result = runner.invoke(['discover'])
+    assert not result.exception
+
     result = runner.invoke(['sync'])
     assert not result.exception
 
@@ -47,6 +47,7 @@ def test_simple_run(tmpdir, runner):
 
 def test_sync_inexistant_pair(tmpdir, runner):
     runner.write_with_general("")
+
     result = runner.invoke(['sync', 'foo'])
     assert result.exception
     assert 'pair foo does not exist.' in result.output.lower()
@@ -72,6 +73,9 @@ def test_debug_connections(tmpdir, runner):
 
     tmpdir.mkdir('path_a')
     tmpdir.mkdir('path_b')
+
+    result = runner.invoke(['discover'])
+    assert not result.exception
 
     result = runner.invoke(['-vdebug', 'sync', '--max-workers=3'])
     assert 'using 3 maximal workers' in result.output.lower()
@@ -101,6 +105,9 @@ def test_empty_storage(tmpdir, runner):
     tmpdir.mkdir('path_a')
     tmpdir.mkdir('path_b')
 
+    result = runner.invoke(['discover'])
+    assert not result.exception
+
     result = runner.invoke(['sync'])
     assert not result.exception
 
@@ -116,41 +123,20 @@ def test_empty_storage(tmpdir, runner):
     assert result.exception
 
 
-def test_verbosity(tmpdir):
-    runner = CliRunner()
-    config_file = tmpdir.join('config')
-    config_file.write('')
-
-    result = runner.invoke(
-        cli.app, ['--verbosity=HAHA', 'sync'],
-        env={'VDIRSYNCER_CONFIG': str(config_file)}
-    )
+def test_verbosity(tmpdir, runner):
+    runner.write_with_general('')
+    result = runner.invoke(['--verbosity=HAHA', 'sync'])
     assert result.exception
     assert 'invalid value for "--verbosity"' in result.output.lower()
 
 
-def test_deprecated_item_status(tmpdir):
-    f = tmpdir.join('mypair.items')
-    f.write(dedent('''
-    ["ident", ["href_a", "etag_a", "href_b", "etag_b"]]
-    ["ident_two", ["href_a", "etag_a", "href_b", "etag_b"]]
-    ''').strip())
-
-    data = {
-        'ident': ['href_a', 'etag_a', 'href_b', 'etag_b'],
-        'ident_two': ['href_a', 'etag_a', 'href_b', 'etag_b']
-    }
-
-    assert cli.utils.load_status(
-        str(tmpdir), 'mypair', data_type='items') == data
-
-    cli.utils.save_status(
-        str(tmpdir), 'mypair', data_type='items', data=data)
-    assert cli.utils.load_status(
-        str(tmpdir), 'mypair', data_type='items') == data
-
-
 def test_collections_cache_invalidation(tmpdir, runner):
+    foo = tmpdir.mkdir('foo')
+    bar = tmpdir.mkdir('bar')
+    for x in 'abc':
+        foo.mkdir(x)
+        bar.mkdir(x)
+
     runner.write_with_general(dedent('''
     [storage foo]
     type = filesystem
@@ -168,12 +154,10 @@ def test_collections_cache_invalidation(tmpdir, runner):
     collections = ["a", "b", "c"]
     ''').format(str(tmpdir)))
 
-    foo = tmpdir.mkdir('foo')
-    bar = tmpdir.mkdir('bar')
-    for x in 'abc':
-        foo.mkdir(x)
-        bar.mkdir(x)
     foo.join('a/itemone.txt').write('UID:itemone')
+
+    result = runner.invoke(['discover'])
+    assert not result.exception
 
     result = runner.invoke(['sync'])
     assert not result.exception
@@ -208,6 +192,12 @@ def test_collections_cache_invalidation(tmpdir, runner):
         bar2.mkdir(x)
     result = runner.invoke(['sync'])
     assert 'detected change in config file' in result.output.lower()
+    assert result.exception
+
+    result = runner.invoke(['discover'])
+    assert not result.exception
+
+    result = runner.invoke(['sync'])
     assert not result.exception
 
     rv = bar.join('a').listdir()
@@ -239,6 +229,9 @@ def test_invalid_pairs_as_cli_arg(tmpdir, runner):
         for c in 'abc':
             base.mkdir(c)
 
+    result = runner.invoke(['discover'])
+    assert not result.exception
+
     result = runner.invoke(['sync', 'foobar/d'])
     assert result.exception
     assert 'pair foobar: collection d not found' in result.output.lower()
@@ -258,19 +251,25 @@ def test_multiple_pairs(tmpdir, runner):
                 yield dedent('''
                 [storage {name}]
                 type = filesystem
-                path = {base}/{name}/
+                path = {path}
                 fileext = .txt
-                ''').format(name=name, base=str(tmpdir))
+                ''').format(name=name, path=str(tmpdir.mkdir(name)))
 
     runner.write_with_general(''.join(get_cfg()))
 
-    result = runner.invoke(['sync'])
+    result = runner.invoke(['discover'])
     assert set(result.output.splitlines()) > set([
         'Discovering collections for pair bambaz',
-        'Discovering collections for pair foobar',
+        'Discovering collections for pair foobar'
+    ])
+    assert not result.exception
+
+    result = runner.invoke(['sync'])
+    assert set(result.output.splitlines()) == set([
         'Syncing bambaz',
         'Syncing foobar',
     ])
+    assert not result.exception
 
 
 @given(collections=st.sets(
@@ -311,13 +310,8 @@ def test_create_collections(subtest, collections):
         fileext = .txt
         '''.format(base=str(tmpdir), colls=json.dumps(list(collections)))))
 
-        result = runner.invoke(['sync'])
-        assert result.exception
-        entries = set(x.basename for x in tmpdir.listdir())
-        assert 'foo' not in entries and 'bar' not in entries
-
         result = runner.invoke(
-            ['sync'],
+            ['discover'],
             input='y\n' * 2 * (len(collections) + 1)
         )
         assert not result.exception
@@ -369,6 +363,9 @@ def test_ident_conflict(tmpdir, runner):
     foo.join('two.txt').write('UID:1')
     foo.join('three.txt').write('UID:1')
 
+    result = runner.invoke(['discover'])
+    assert not result.exception
+
     result = runner.invoke(['sync'])
     assert result.exception
     assert ('error: foobar: Storage "foo" contains multiple items with the '
@@ -399,7 +396,7 @@ def test_unknown_storage(tmpdir, runner, existing, missing):
 
     tmpdir.mkdir(existing)
 
-    result = runner.invoke(['sync'])
+    result = runner.invoke(['discover'])
     assert result.exception
 
     assert (

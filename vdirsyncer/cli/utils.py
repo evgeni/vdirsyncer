@@ -156,33 +156,40 @@ def _get_collections_cache_key(pair):
     return m.hexdigest()
 
 
-def collections_for_pair(status_path, pair, skip_cache=False):
+def collections_for_pair(status_path, pair, from_cache=True,
+                         list_collections=False):
     '''Determine all configured collections for a given pair. Takes care of
     shortcut expansion and result caching.
 
     :param status_path: The path to the status directory.
-    :param skip_cache: Whether to skip the cached data and always do discovery.
-        Even with this option enabled, the new cache is written.
+    :param from_cache: Whether to load from cache (aborting on cache miss) or
+        discover and save to cache.
 
     :returns: iterable of (collection, (a_args, b_args))
     '''
-    rv = load_status(status_path, pair.name, data_type='collections')
     cache_key = _get_collections_cache_key(pair)
-    if rv and not skip_cache:
-        if rv.get('cache_key', None) == cache_key:
+    if from_cache:
+        rv = load_status(status_path, pair.name, data_type='collections')
+        if rv and rv.get('cache_key', None) == cache_key:
             return list(_expand_collections_cache(
                 rv['collections'], pair.config_a, pair.config_b
             ))
         elif rv:
-            cli_logger.info('Detected change in config file, discovering '
-                            'collections for {}'.format(pair.name))
+            raise exceptions.UserError('Detected change in config file, '
+                                       'please run `vdirsyncer discover {}`.'
+                                       .format(pair.name))
+        else:
+            raise exceptions.UserError('Please run `vdirsyncer discover {}` '
+                                       ' before synchronization.'
+                                       .format(pair.name))
 
     cli_logger.info('Discovering collections for pair {}'
                     .format(pair.name))
 
     # We have to use a list here because the special None/null value would get
     # mangled to string (because JSON objects always have string keys).
-    rv = list(_collections_for_pair_impl(status_path, pair))
+    rv = list(_collections_for_pair_impl(status_path, pair,
+                                         list_collections=list_collections))
 
     save_status(status_path, pair.name, data_type='collections',
                 data={
@@ -267,7 +274,27 @@ def _handle_collection_not_found(config, collection, e=None):
                            storage=storage_name))
 
 
-def _collections_for_pair_impl(status_path, pair):
+def _print_collections(base_config, discovered):
+    instance_name = base_config['instance_name']
+    cli_logger.info('{}:'.format(coerce_native(instance_name)))
+    for args in discovered.values():
+        args['instance_name'] = instance_name
+        try:
+            storage = storage_instance_from_config(args)
+            displayname = storage.get_meta('displayname')
+        except Exception:
+            displayname = u''
+
+        cli_logger.info('  - {}{}'.format(
+            storage.collection,
+            ' ("{}")'.format(coerce_native(displayname))
+            if displayname and displayname != storage.collection
+            else ''
+        ))
+
+
+def _collections_for_pair_impl(status_path, pair, list_collections=False):
+    handled_collections = set()
 
     shortcuts = pair.options['collections']
     if shortcuts is None:
@@ -275,6 +302,10 @@ def _collections_for_pair_impl(status_path, pair):
     else:
         a_discovered = _discover_from_config(pair.config_a)
         b_discovered = _discover_from_config(pair.config_b)
+
+        if list_collections:
+            _print_collections(pair.config_a, a_discovered)
+            _print_collections(pair.config_b, b_discovered)
 
         for shortcut in shortcuts:
             if shortcut == 'from a':
@@ -295,6 +326,10 @@ def _collections_for_pair_impl(status_path, pair):
                             .format(collection))
                 else:
                     collection_a = collection_b = collection
+
+                if collection in handled_collections:
+                    continue
+                handled_collections.add(collection)
 
                 try:
                     a_args = a_discovered[collection_a]
@@ -330,15 +365,6 @@ def load_status(base_path, pair, collection=None, data_type=None):
     with open(path) as f:
         try:
             return dict(json.load(f))
-        except ValueError:
-            pass
-
-        # XXX: Deprecate
-        # Old status format, deprecated as of 0.4.0
-        # See commit 06a701bc10dac16ff0ff304eb7cb9f502b71cf95
-        f.seek(0)
-        try:
-            return dict(json.loads(line) for line in f)
         except ValueError:
             pass
 
